@@ -1,0 +1,91 @@
+---
+- name: Configurar VM Ubuntu para el portafolio
+  hosts: portfolio
+  become: true
+  gather_facts: false
+  vars:
+    app_dir: /opt/portfolio
+    docker_image: "{{ lookup('env', 'DOCKER_IMAGE') | default('tu-usuario/portfolio-personal:latest', true) }}"
+  tasks:
+    - name: Esperar a que la VM acepte conexiones SSH
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: 300
+    - name: Recopilar datos del sistema
+      ansible.builtin.setup:
+    - name: Actualizar paquetes
+      ansible.builtin.apt: { update_cache: true, upgrade: dist }
+    - name: Instalar utilidades base, Git y firewall
+      ansible.builtin.apt:
+        name: [git, curl, ca-certificates, ufw, iptables, python3-pip]
+        state: present
+    - name: Instalar Docker desde repositorio Ubuntu
+      ansible.builtin.apt:
+        name: [docker.io, docker-compose-v2]
+        state: present
+    - name: Iniciar Docker al arrancar
+      ansible.builtin.service: { name: docker, state: started, enabled: true }
+    - name: Permitir Docker al usuario SSH
+      ansible.builtin.user: { name: "{{ ansible_user }}", groups: docker, append: true }
+    - name: Permitir SSH, HTTP y HTTPS en UFW
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop: ['22', '80', '443']
+    - name: Activar UFW con política de entrada deny
+      community.general.ufw: { state: enabled, policy: deny, direction: incoming }
+    - name: Asegurar reglas iptables para HTTP y HTTPS
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: "{{ item }}"
+        jump: ACCEPT
+        comment: Portfolio web port
+      loop: ['80', '443']
+    - name: Crear carpeta de despliegue
+      ansible.builtin.file: { path: "{{ app_dir }}", state: directory, owner: "{{ ansible_user }}", mode: '0755' }
+    - name: Descargar imagen publicada en Docker Hub
+      community.docker.docker_image:
+        name: "{{ docker_image }}"
+        source: pull
+      when: lookup('env', 'DOCKER_IMAGE') | length > 0
+    - name: Copiar esquema PostgreSQL
+      ansible.builtin.copy:
+        src: ../../backend/sql/init.sql
+        dest: "{{ app_dir }}/init.sql"
+        owner: "{{ ansible_user }}"
+        mode: '0644'
+      when: lookup('env', 'DOCKER_IMAGE') | length > 0
+    - name: Iniciar PostgreSQL en Docker
+      community.docker.docker_container:
+        name: portfolio-db
+        image: postgres:16-alpine
+        state: started
+        restart_policy: unless-stopped
+        env:
+          POSTGRES_DB: portfolio
+          POSTGRES_USER: portfolio
+          POSTGRES_PASSWORD: portfolio
+        volumes:
+          - "{{ app_dir }}/init.sql:/docker-entrypoint-initdb.d/init.sql:ro"
+      when: lookup('env', 'DOCKER_IMAGE') | length > 0
+    - name: Esperar a PostgreSQL
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 5432
+        timeout: 60
+      when: lookup('env', 'DOCKER_IMAGE') | length > 0
+    - name: Iniciar portafolio en Docker
+      community.docker.docker_container:
+        name: portfolio-app
+        image: "{{ docker_image }}"
+        state: started
+        restart_policy: unless-stopped
+        published_ports: ['80:3000']
+        env:
+          PORT: '3000'
+          DATABASE_URL: postgresql://portfolio:portfolio@portfolio-db:5432/portfolio
+        links:
+          - portfolio-db:db
+      when: lookup('env', 'DOCKER_IMAGE') | length > 0

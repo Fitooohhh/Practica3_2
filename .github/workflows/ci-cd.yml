@@ -1,0 +1,118 @@
+name: Portfolio CI/CD
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests automatizados
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm install
+      - name: Tests unitarios
+        run: npm run test:unit
+      - name: Tests de integración
+        run: npm run test:integration
+      - name: Instalar navegador para E2E
+        run: npx playwright install --with-deps chromium
+      - name: Tests E2E
+        run: npm run test:e2e
+      - name: Build frontend
+        run: npm run build
+
+  docker:
+    name: Docker Hub y Terraform
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: tests
+    runs-on: ubuntu-latest
+    env:
+      TF_VAR_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+      TF_VAR_user_ocid: ${{ secrets.OCI_USER_OCID }}
+      TF_VAR_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+      TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
+      TF_VAR_region: ${{ secrets.OCI_REGION }}
+      TF_VAR_private_key_path: ${{ github.workspace }}/oci_api_key.pem
+      TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+      TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+      TF_VAR_domain: ${{ secrets.PORTFOLIO_DOMAIN }}
+      DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/portfolio-personal:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build y publicar imagen
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.DOCKER_IMAGE }}
+      - name: Instalar Terraform
+        uses: hashicorp/setup-terraform@v3
+      - name: Preparar clave OCI
+        shell: bash
+        env:
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          printf '%s\n' "$OCI_PRIVATE_KEY" > oci_api_key.pem
+          chmod 600 oci_api_key.pem
+      - name: Terraform init y validate
+        working-directory: infra
+        run: terraform init && terraform validate
+      - name: Recuperar estado Terraform del último despliegue
+        uses: actions/cache/restore@v4
+        with:
+          path: infra/terraform.tfstate*
+          key: terraform-state-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: terraform-state-${{ github.ref_name }}-
+      - name: Crear VM, VCN y subred pública
+        working-directory: infra
+        run: terraform apply -auto-approve
+      - name: Guardar estado Terraform para próximos pushes
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: infra/terraform.tfstate*
+          key: terraform-state-${{ github.ref_name }}-${{ github.run_id }}
+      - name: Mostrar IP pública
+        working-directory: infra
+        run: terraform output instance_public_ip
+      - name: Instalar Ansible y sus colecciones
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible
+          ansible-galaxy collection install community.general community.docker
+      - name: Configurar VM con Ansible
+        env:
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > vm_ssh_key.pem
+          chmod 600 vm_ssh_key.pem
+          VM_IP="$(terraform -chdir=infra output -raw instance_public_ip)"
+          printf '[portfolio]\nportfolio-vm ansible_host=%s ansible_user=ubuntu ansible_ssh_private_key_file=%s\n' "$VM_IP" "$GITHUB_WORKSPACE/vm_ssh_key.pem" > inventory.ini
+          for attempt in {1..18}; do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i vm_ssh_key.pem ubuntu@"$VM_IP" "echo ssh-ready"; then
+              break
+            fi
+            if [ "$attempt" -eq 18 ]; then
+              echo "La VM no estuvo disponible por SSH a tiempo"
+              exit 1
+            fi
+            sleep 10
+          done
+          ANSIBLE_HOST_KEY_CHECKING=False DOCKER_IMAGE="$DOCKER_IMAGE" ansible-playbook -i inventory.ini infra/ansible/playbook.yml
