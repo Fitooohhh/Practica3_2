@@ -45,7 +45,7 @@ variable "app_name" {
 variable "cloudflare_api_token" {
   type      = string
   sensitive = true
-  default   = ""
+  default   = "disabled"
 }
 
 variable "cloudflare_zone_id" {
