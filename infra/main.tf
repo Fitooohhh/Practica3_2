@@ -4,6 +4,7 @@ data "oci_core_images" "ubuntu" {
   compartment_id           = var.compartment_ocid
   operating_system         = "Canonical Ubuntu"
   operating_system_version = "24.04"
+  shape                    = var.instance_shape
   sort_by                  = "TIMECREATED"
   sort_order               = "DESC"
 }
@@ -88,6 +89,10 @@ resource "oci_core_instance" "portfolio" {
   compartment_id      = var.compartment_ocid
   display_name        = var.app_name
   shape               = var.instance_shape
+  shape_config {
+    ocpus         = var.instance_ocpus
+    memory_in_gbs = var.instance_memory_gbs
+  }
   create_vnic_details {
     subnet_id        = oci_core_subnet.public.id
     assign_public_ip = true

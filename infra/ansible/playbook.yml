@@ -71,10 +71,11 @@
           - "{{ app_dir }}/init.sql:/docker-entrypoint-initdb.d/init.sql:ro"
       when: lookup('env', 'DOCKER_IMAGE') | length > 0
     - name: Esperar a PostgreSQL
-      ansible.builtin.wait_for:
-        host: 127.0.0.1
-        port: 5432
-        timeout: 60
+      ansible.builtin.command: docker exec portfolio-db pg_isready -U portfolio -d portfolio
+      register: postgres_ready
+      retries: 12
+      delay: 5
+      until: postgres_ready.rc == 0
       when: lookup('env', 'DOCKER_IMAGE') | length > 0
     - name: Iniciar portafolio en Docker
       community.docker.docker_container:

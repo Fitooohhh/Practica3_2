@@ -12,8 +12,10 @@ test-results/
 *.tfstate.*
 *.tfvars
 *.tfvars.json
+*.tfplan
 terraform/.terraform.lock.hcl
 ansible/.vault_pass
+infra/ansible/inventory.local.ini
 oci_private_key.pem
 secrets/
 docx_work/

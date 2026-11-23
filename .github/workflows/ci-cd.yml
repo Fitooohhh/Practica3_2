@@ -44,6 +44,7 @@ jobs:
       TF_VAR_region: ${{ secrets.OCI_REGION }}
       TF_VAR_private_key_path: ${{ github.workspace }}/oci_api_key.pem
       TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+      EXISTING_INSTANCE_IP: ${{ secrets.OCI_EXISTING_INSTANCE_IP }}
       DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/portfolio-personal:latest
     steps:
       - uses: actions/checkout@v4
@@ -72,22 +73,31 @@ jobs:
         run: terraform init && terraform validate
       - name: Recuperar estado Terraform del último despliegue
         uses: actions/cache/restore@v4
+        if: env.EXISTING_INSTANCE_IP == ''
         with:
           path: infra/terraform.tfstate*
           key: terraform-state-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: terraform-state-${{ github.ref_name }}-
       - name: Crear VM, VCN y subred pública
         working-directory: infra
+        if: env.EXISTING_INSTANCE_IP == ''
         run: terraform apply -auto-approve
       - name: Guardar estado Terraform para próximos pushes
-        if: always()
+        if: always() && env.EXISTING_INSTANCE_IP == ''
         uses: actions/cache/save@v4
         with:
           path: infra/terraform.tfstate*
           key: terraform-state-${{ github.ref_name }}-${{ github.run_id }}
       - name: Mostrar IP pública
+        id: deployment_ip
         working-directory: infra
-        run: terraform output instance_public_ip
+        shell: bash
+        run: |
+          if [ -n "$EXISTING_INSTANCE_IP" ]; then
+            echo "vm_ip=$EXISTING_INSTANCE_IP" >> "$GITHUB_OUTPUT"
+          else
+            echo "vm_ip=$(terraform output -raw instance_public_ip)" >> "$GITHUB_OUTPUT"
+          fi
       - name: Instalar Ansible y sus colecciones
         run: |
           sudo apt-get update
@@ -100,7 +110,7 @@ jobs:
         run: |
           printf '%s\n' "$VM_SSH_PRIVATE_KEY" > vm_ssh_key.pem
           chmod 600 vm_ssh_key.pem
-          VM_IP="$(terraform -chdir=infra output -raw instance_public_ip)"
+          VM_IP="${{ steps.deployment_ip.outputs.vm_ip }}"
           printf '[portfolio]\nportfolio-vm ansible_host=%s ansible_user=ubuntu ansible_ssh_private_key_file=%s\n' "$VM_IP" "$GITHUB_WORKSPACE/vm_ssh_key.pem" > inventory.ini
           for attempt in {1..18}; do
             if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i vm_ssh_key.pem ubuntu@"$VM_IP" "echo ssh-ready"; then

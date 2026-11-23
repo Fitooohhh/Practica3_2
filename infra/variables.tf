@@ -32,7 +32,17 @@ variable "availability_domain" {
 
 variable "instance_shape" {
   type    = string
-  default = "VM.Standard.E2.1.Micro"
+  default = "VM.Standard.E5.Flex"
+}
+
+variable "instance_ocpus" {
+  type    = number
+  default = 1
+}
+
+variable "instance_memory_gbs" {
+  type    = number
+  default = 6
 }
 
 variable "ssh_public_key" { type = string }
