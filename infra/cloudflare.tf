@@ -1,9 +1,4 @@
-resource "cloudflare_record" "portfolio" {
-  count   = var.cloudflare_zone_id != "" && var.domain != "" ? 1 : 0
-  zone_id = var.cloudflare_zone_id
-  name    = var.domain
-  content = oci_core_instance.portfolio.public_ip
-  type    = "A"
-  ttl     = 1
-  proxied = true
-}
+# Cloudflare es opcional para los puntos extra.
+# Este despliegue base usa directamente la IP pública de OCI.
+# Para activar Cloudflare después, se puede restaurar el recurso y agregar
+# CLOUDFLARE_API_TOKEN, CLOUDFLARE_ZONE_ID y PORTFOLIO_DOMAIN en GitHub.
